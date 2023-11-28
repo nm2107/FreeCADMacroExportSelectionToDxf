@@ -1,0 +1,121 @@
+# -*- coding: utf-8 -*-
+
+
+# @see https://wiki.freecad.org/Dialog_creation_reading_and_writing_files
+# @see https://wiki.freecad.org/TechDraw_View
+# @see https://wiki.freecad.org/TechDraw_API
+
+
+import FreeCAD
+import FreeCADGui
+import TechDraw
+import PySide
+from PySide import QtGui ,QtCore
+from PySide.QtGui import *
+from PySide.QtCore import *
+from os import path
+
+
+def removeViewPageFromDoc(view: FreeCAD.DocumentObject) -> None:
+    inList = view.InList
+
+    if not len(inList):
+        return
+
+    page = inList[0]
+    if not 'TechDraw::DrawPage' == page.TypeId:
+        return
+
+    view.Document.removeObject(page.Name)
+
+
+def saveViewAsDxf(view: FreeCAD.DocumentObject, dxfFilePath: str) -> None:
+    TechDraw.writeDXFView(view, dxfFilePath)
+
+
+def createObjectsView(document: FreeCAD.Document, objects: list) -> FreeCAD.DocumentObject:
+    activeView = FreeCADGui.ActiveDocument.ActiveView
+    if not hasattr(activeView, 'getCameraOrientation'):
+        raise RuntimeError('Please show the 3D view in order to create a projection.')
+
+    # @see https://forum.freecad.org/viewtopic.php?t=54256
+    # @see https://wiki.freecad.org/Macro_Align_View_to_Face
+    viewUp: FreeCAD.Vector = FreeCAD.Vector(0.0, 0.0, 1.0)
+    cameraOrientation: FreeCAD.Rotation = activeView.getCameraOrientation()
+    viewDirection = cameraOrientation.multVec(viewUp)
+    viewXDirection = viewUp.cross(viewDirection)
+
+    page = document.addObject('TechDraw::DrawPage', 'DxfPage')
+    template = document.addObject('TechDraw::DrawSVGTemplate', 'Template')
+    template.Template = FreeCAD.getResourceDir() + 'Mod/TechDraw/Templates/A4_Portrait_blank.svg'
+    page.Template = template
+
+    # Toggle the visibility of the page to prevent the Page Select dialog to
+    # open. I.e. we force the selection of this page to set the view on.
+    page.Visibility = False
+    page.Visibility = True
+
+    view = document.addObject('TechDraw::DrawViewPart', 'View')
+    page.addView(view)
+    page.Scale = 1.0
+    view.Source = objects
+    view.Direction = viewDirection
+    view.XDirection = viewXDirection
+    view.X = 0.0
+    view.Y = 0.0
+
+    return view
+
+
+def chooseDxfFileDest(document: FreeCAD.Document) -> str:
+    dialogDir: str = None
+    documentDir: str = path.dirname(document.FileName)
+
+    if documentDir:
+        dialogDir = documentDir
+    else:
+        dialogDir = FreeCAD.ConfigGet('UserHomePath')
+
+    return PySide.QtGui.QFileDialog.getSaveFileName(None, 'Export as DXF', dialogDir, 'DXF files (*.dxf)')[0]
+
+
+def getSelectedObjects() -> list:
+    return Gui.Selection.getSelection()
+
+
+def exportSelectionToDxf(document: FreeCAD.Document) -> None:
+    selectedObjects: list = getSelectedObjects()
+
+    if (0 == len(selectedObjects)):
+        FreeCAD.Console.PrintWarning('Please select at least one object.')
+        return
+
+    try:
+        view = createObjectsView(document, selectedObjects)
+    except RuntimeError as e:
+        FreeCAD.Console.PrintWarning(e)
+        return
+
+    # We have to call the redraw in oder to paint the view.
+    # The paiting happens while the DXF file location dialog is opened.
+    FreeCADGui.runCommand('TechDraw_RedrawPage', 0)
+
+    dxfFilePath: str = chooseDxfFileDest(document)
+    if dxfFilePath:
+        # path chosen, so we write the DXF file content
+        saveViewAsDxf(view, dxfFilePath)
+        FreeCADGui.Selection.clearSelection()
+        FreeCADGui.Selection.addSelection(document.Name, view.Name)
+    else:
+        # no path chosen, the user has closed/cancelled the dialog, so we're
+        # aborting the process and returning the doc to its original state.
+        removeViewPageFromDoc(view)
+
+    document.recompute()
+
+
+def main():
+    exportSelectionToDxf(FreeCAD.ActiveDocument)
+
+
+main()
